@@ -144,4 +144,4 @@ if __name__ == "__main__":
     # result = benchmark(model, data, batch_size=8, strategy="batch", max_length=64)
 
     # --- group strategy ---
-    result = benchmark(model, data, batch_size=256, strategy="group", max_length=512, mini_batch_size=32)
+    result = benchmark(model, data, batch_size=256, strategy="group", max_length=512, mini_batch_size=16)

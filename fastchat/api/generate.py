@@ -3,12 +3,41 @@ from fastchat.conversation import conv_templates
 
 import torch
 import logging
+import tqdm
+import time
 
 DEFAULT_PAD_TOKEN = "[PAD]"
 DEFAULT_EOS_TOKEN = "</s>"
 DEFAULT_BOS_TOKEN = "</s>"
 DEFAULT_UNK_TOKEN = "</s>"
 
+
+def split_and_offload(kv_caches):
+    bs = kv_caches[0][0].shape[0]
+    # split tensors
+    result = []
+    for layer in kv_caches:
+        new_keys = []
+        for key in layer:
+            key = key.to("cpu", non_blocking=True)
+            new_key = key.unbind()
+            new_keys.append(new_key)
+        result.append(new_keys)
+    return result
+
+    # move to cpu
+    caches = []
+    # for i in range(bs):
+    #     cache = []
+    #     for layer in result:
+    #         new_keys = []
+    #         for key in layer:
+    #             new_key = key[i]
+    #             new_keys.append(new_key)
+    #         cache.append(new_keys)
+    #     caches.append(cache)
+
+    return caches
 
 class Creator:
     def __init__(
@@ -176,30 +205,41 @@ class Creator:
         stop_str = "###"
         tokenizer, model, device = self.tokenizer, self.model, self.device
 
-        # kv cache computation
-        inputs = tokenizer(prompt, return_tensors="pt", padding=True)
-        input_ids = inputs.input_ids.to(device)
-        attention_mask = inputs.attention_mask.to(device)
-        breakpoint()
-        out = model(input_ids, use_cache=True)
-        logits = out.logits
-        past_key_values = out.past_key_values
-        breakpoint()
+        # kv cache computation & length prediction
+        kv_caches_cpu = []
+        length_prediction = []
+        for i in tqdm.tqdm(range(0, len(prompt), mini_batch_size)):
+            inputs = tokenizer(
+                prompt[i : i + mini_batch_size], return_tensors="pt", padding=True
+            )
+            input_ids = inputs.input_ids.to(device)
+            attention_mask = inputs.attention_mask.to(device)
+            # torch.cuda.synchronize()
+            T0 = time.time()
+            out = model(
+                input_ids=input_ids, use_cache=True, attention_mask=attention_mask
+            )
 
-        # length prediction
-        pass
+            # offload kv cache
+            # torch.cuda.synchronize()
+            T1 = time.time()
+            print(f"kv cache compute: {T1 - T0:.3f} s")
+            kv_cache_cpu = split_and_offload(out.past_key_values)
+            kv_caches_cpu.extend(kv_cache_cpu)
+            # torch.cuda.synchronize()
+            T2 = time.time()
+            print(f"kv cache offload: {T2 - T1:.3f} s")
+            del out
 
-        # kv cache storage
-        pass
+            # length prediction
+            length_prediction.extend([max_new_tokens] * len(kv_cache_cpu))
+        breakpoint()
 
         # rescheduling
         pass
 
         # batch generation
 
-        
-
-    
     @torch.inference_mode()
     def __call__(self, prompt, strategy="stream", **kwargs):
         # ===
