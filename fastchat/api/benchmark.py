@@ -56,7 +56,7 @@ def describe(input_len, name=""):
     print(f"\tquartiles: {np.quantile(input_len, [0, 0.25, 0.5, 0.75, 1])}")
 
 
-def benchmark(model, data, batch_size=1, strategy="stream", max_length=512):
+def benchmark(model, data, batch_size=1, strategy="stream", max_length=512, **kwargs):
     logging.warning(f"Batch size: {batch_size}")
     logging.warning(f"Strategy: {strategy}")
 
@@ -72,7 +72,7 @@ def benchmark(model, data, batch_size=1, strategy="stream", max_length=512):
             strategy=strategy,
             temperature=0.7,
             max_length=max_length,
-            debug=True,
+            **kwargs,
         )
         num_tokens += sum([o["num_input_tokens"] for o in out])
         num_finished += sum([o["num_finished"] for o in out])
@@ -128,7 +128,7 @@ if __name__ == "__main__":
 
     # --- stream ---
     # result = benchmark(model, data, batch_size=1, strategy="stream", max_length=512)
-    result = benchmark(model, data, batch_size=1, strategy="batch", max_length=512)
+    # result = benchmark(model, data, batch_size=1, strategy="batch", max_length=512)
 
     # --- batch size ---
     # result = benchmark(model, data, batch_size=4, strategy="batch", max_length=512)
@@ -142,3 +142,6 @@ if __name__ == "__main__":
     # result = benchmark(model, data, batch_size=8, strategy="batch", max_length=256)
     # result = benchmark(model, data, batch_size=8, strategy="batch", max_length=128)
     # result = benchmark(model, data, batch_size=8, strategy="batch", max_length=64)
+
+    # --- group strategy ---
+    result = benchmark(model, data, batch_size=256, strategy="group", max_length=512, mini_batch_size=32)

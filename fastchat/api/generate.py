@@ -168,6 +168,38 @@ class Creator:
             results.append(result)
         return results
 
+    def generate_group(self, prompt, **kwargs):
+        # default values
+        temperature = kwargs.get("temperature", 1.0)
+        max_new_tokens = kwargs.get("max_length", 256)
+        mini_batch_size = kwargs.get("mini_batch_size", 32)
+        stop_str = "###"
+        tokenizer, model, device = self.tokenizer, self.model, self.device
+
+        # kv cache computation
+        inputs = tokenizer(prompt, return_tensors="pt", padding=True)
+        input_ids = inputs.input_ids.to(device)
+        attention_mask = inputs.attention_mask.to(device)
+        breakpoint()
+        out = model(input_ids, use_cache=True)
+        logits = out.logits
+        past_key_values = out.past_key_values
+        breakpoint()
+
+        # length prediction
+        pass
+
+        # kv cache storage
+        pass
+
+        # rescheduling
+        pass
+
+        # batch generation
+
+        
+
+    
     @torch.inference_mode()
     def __call__(self, prompt, strategy="stream", **kwargs):
         # ===
@@ -180,6 +212,8 @@ class Creator:
         # ===
         elif strategy == "batch":
             out = self.generate_batch(prompt, **kwargs)
+        elif strategy == "group":
+            out = self.generate_group(prompt, **kwargs)
         else:
             raise NotImplementedError
 
