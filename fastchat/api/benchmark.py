@@ -88,6 +88,8 @@ def benchmark(model, data, batch_size=1, strategy="stream", max_length=512, **kw
     unfinish_ratio = (len(data) - num_finished) / len(data)
 
     print(f"Strategy: {strategy}, Batch size: {batch_size}, Max length: {max_length}")
+    if strategy == "group":
+        print(f"mini batch size: {kwargs['mini_batch_size']}")
     print(f"Total samples: {len(data)}")
     print(f"Time: {interval_s:.2f} s")
     print(
@@ -132,7 +134,7 @@ if __name__ == "__main__":
 
     # --- batch size ---
     # result = benchmark(model, data, batch_size=4, strategy="batch", max_length=512)
-    # result = benchmark(model, data, batch_size=8, strategy="batch", max_length=512)
+    result = benchmark(model, data, batch_size=8, strategy="batch", max_length=512)
     # result = benchmark(model, data, batch_size=16, strategy="batch", max_length=512)
     # result = benchmark(model, data, batch_size=32, strategy="batch", max_length=512)
     # !! OOM !!
@@ -144,4 +146,5 @@ if __name__ == "__main__":
     # result = benchmark(model, data, batch_size=8, strategy="batch", max_length=64)
 
     # --- group strategy ---
-    result = benchmark(model, data, batch_size=256, strategy="group", max_length=512, mini_batch_size=16)
+    # result = benchmark(model, data, batch_size=256, strategy="group", max_length=512, mini_batch_size=16)
+    # result = benchmark(model, data, batch_size=16, strategy="group", max_length=512, mini_batch_size=8)
