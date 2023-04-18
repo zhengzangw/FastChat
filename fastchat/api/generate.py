@@ -103,6 +103,8 @@ class Creator:
 
         # stream generation
         for i in range(max_new_tokens):
+            torch.cuda.synchronize()
+            T0 = time.time()
             if i == 0:
                 out = model(torch.as_tensor(input_ids, device=device), use_cache=True)
                 logits = out.logits
@@ -119,6 +121,9 @@ class Creator:
                 )
                 logits = out.logits
                 past_key_values = out.past_key_values
+            torch.cuda.synchronize()
+            T1 = time.time()
+            print(f"Time {i}: {T1 - T0:.3f} s")
 
             last_token_logits = logits[0][-1]
 

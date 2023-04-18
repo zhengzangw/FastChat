@@ -129,12 +129,12 @@ if __name__ == "__main__":
     # ===
 
     # --- stream ---
-    # result = benchmark(model, data, batch_size=1, strategy="stream", max_length=512)
+    result = benchmark(model, data, batch_size=1, strategy="stream", max_length=512)
     # result = benchmark(model, data, batch_size=1, strategy="batch", max_length=512)
 
     # --- batch size ---
     # result = benchmark(model, data, batch_size=4, strategy="batch", max_length=512)
-    result = benchmark(model, data, batch_size=8, strategy="batch", max_length=512)
+    # result = benchmark(model, data, batch_size=8, strategy="batch", max_length=512)
     # result = benchmark(model, data, batch_size=16, strategy="batch", max_length=512)
     # result = benchmark(model, data, batch_size=32, strategy="batch", max_length=512)
     # !! OOM !!
