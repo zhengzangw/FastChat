@@ -46,7 +46,7 @@ def heart_beat_worker(controller):
 class ModelWorker:
     def __init__(self, controller_addr, worker_addr,
                  worker_id, no_register, model_path, model_name,
-                 device, num_gpus, load_8bit=False):
+                 device, num_gpus, max_gpu_memory, load_8bit=False):
         self.controller_addr = controller_addr
         self.worker_addr = worker_addr
         self.worker_id = worker_id
@@ -57,7 +57,7 @@ class ModelWorker:
 
         logger.info(f"Loading the model {self.model_name} on worker {worker_id} ...")
         self.model, self.tokenizer = load_model(
-            model_path, device, num_gpus, load_8bit)
+            model_path, device, num_gpus, max_gpu_memory, load_8bit)
 
         if hasattr(self.model.config, "max_sequence_length"):
             self.context_len = self.model.config.max_sequence_length
@@ -177,10 +177,13 @@ if __name__ == "__main__":
         default="http://localhost:21002")
     parser.add_argument("--controller-address", type=str,
         default="http://localhost:21001")
-    parser.add_argument("--model-path", type=str, default="facebook/opt-350m")
-    parser.add_argument("--model-name", type=str)
+    parser.add_argument("--model-path", type=str, default="facebook/opt-350m",
+        help="The path to the weights")
+    parser.add_argument("--model-name", type=str,
+        help="Optional name")
     parser.add_argument("--device", type=str, choices=["cpu", "cuda", "mps"], default="cuda")
     parser.add_argument("--num-gpus", type=int, default=1)
+    parser.add_argument("--max-gpu-memory", type=str, default="13GiB")
     parser.add_argument("--load-8bit", action="store_true")
     parser.add_argument("--limit-model-concurrency", type=int, default=5)
     parser.add_argument("--stream-interval", type=int, default=2)
@@ -196,5 +199,6 @@ if __name__ == "__main__":
                          args.model_name,
                          args.device,
                          args.num_gpus,
+                         args.max_gpu_memory,
                          args.load_8bit)
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")

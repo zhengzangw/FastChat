@@ -9,13 +9,14 @@ import uuid
 import gradio as gr
 import requests
 
-from fastchat.conversation import (default_conversation, conv_templates,
+from fastchat.conversation import (get_default_conv_template,
                                    SeparatorStyle)
 from fastchat.constants import LOGDIR
 from fastchat.utils import (build_logger, server_error_msg,
     violates_moderation, moderation_msg)
 from fastchat.serve.gradio_patch import Chatbot as grChatbot
 from fastchat.serve.gradio_css import code_highlight_css
+from fastchat.serve.inference import compute_skip_echo_len
 
 
 logger = build_logger("gradio_web_server", "gradio_web_server.log")
@@ -29,6 +30,8 @@ disable_btn = gr.Button.update(interactive=False)
 priority = {
     "vicuna-13b": "aaaaaaa",
     "koala-13b": "aaaaaab",
+    "dolly-v2-12b": "aaaaaac",
+    "chatglm-6b": "aaaaaad",
 }
 
 
@@ -68,7 +71,7 @@ def load_demo(url_params, request: gr.Request):
             dropdown_update = gr.Dropdown.update(
                 value=model, visible=True)
 
-    state = default_conversation.copy()
+    state = None
     return (state,
             dropdown_update,
             gr.Chatbot.update(visible=True),
@@ -81,7 +84,7 @@ def load_demo(url_params, request: gr.Request):
 def load_demo_refresh_model_list(request: gr.Request):
     logger.info(f"load_demo. ip: {request.client.host}")
     models = get_model_list()
-    state = default_conversation.copy()
+    state = None
     return (state, gr.Dropdown.update(
                choices=models,
                value=models[0] if len(models) > 0 else ""),
@@ -131,18 +134,23 @@ def regenerate(state, request: gr.Request):
 
 def clear_history(request: gr.Request):
     logger.info(f"clear_history. ip: {request.client.host}")
-    state = default_conversation.copy()
-    return (state, state.to_gradio_chatbot(), "") + (disable_btn,) * 5
+    state = None
+    return (state, [], "") + (disable_btn,) * 5
 
 
 def add_text(state, text, request: gr.Request):
     logger.info(f"add_text. ip: {request.client.host}. len: {len(text)}")
+
+    if state is None:
+        state = get_default_conv_template("vicuna").copy()
+
     if len(text) <= 0:
         state.skip_next = True
         return (state, state.to_gradio_chatbot(), "") + (no_change_btn,) * 5
     if args.moderate:
         flagged = violates_moderation(text)
         if flagged:
+            logger.info(f"violate moderation. ip: {request.client.host}. text: {text}")
             state.skip_next = True
             return (state, state.to_gradio_chatbot(), moderation_msg) + (
                 no_change_btn,) * 5
@@ -177,11 +185,7 @@ def http_bot(state, model_selector, temperature, max_new_tokens, request: gr.Req
 
     if len(state.messages) == state.offset + 2:
         # First round of conversation
-        if "koala" in model_name: # Hardcode the condition
-            template_name = "bair_v1"
-        else:
-            template_name = "v1"
-        new_state = conv_templates[template_name].copy()
+        new_state = get_default_conv_template(model_name).copy()
         new_state.conv_id = uuid.uuid4().hex
         new_state.append_message(new_state.roles[0], state.messages[-2][1])
         new_state.append_message(new_state.roles[1], None)
@@ -203,10 +207,9 @@ def http_bot(state, model_selector, temperature, max_new_tokens, request: gr.Req
     # Construct prompt
     if "chatglm" in model_name:
         prompt = state.messages[state.offset:]
-        skip_echo_len = len(state.messages[-2][1]) + 1
     else:
         prompt = state.get_prompt()
-        skip_echo_len = len(prompt.replace("</s>", " ")) + 1
+    skip_echo_len = compute_skip_echo_len(model_name, state, prompt)
 
     # Make requests
     pload = {
@@ -265,7 +268,7 @@ def http_bot(state, model_selector, temperature, max_new_tokens, request: gr.Req
 
 notice_markdown = ("""
 # 🏔️ Chat with Open Large Language Models
-- Vicuna: An Open-Source Chatbot Impressing GPT-4 with 90% ChatGPT Quality. [[Blog post]](https://vicuna.lmsys.org) [[GitHub]](https://github.com/lm-sys/FastChat)
+- Vicuna: An Open-Source Chatbot Impressing GPT-4 with 90% ChatGPT Quality. [[Blog post]](https://vicuna.lmsys.org) [[GitHub]](https://github.com/lm-sys/FastChat) [[Evaluation]](https://vicuna.lmsys.org/eval/)
 - Koala: A Dialogue Model for Academic Research. [[Blog post]](https://bair.berkeley.edu/blog/2023/04/03/koala/) [[GitHub]](https://github.com/young-geng/EasyLM)
 - This demo server. [[GitHub]](https://github.com/lm-sys/FastChat)
 
@@ -275,11 +278,10 @@ By using this service, users are required to agree to the following terms: The s
 ### Choose a model to chat with
 - [Vicuna](https://vicuna.lmsys.org): a chat assistant fine-tuned from LLaMA on user-shared conversations. This one is expected to perform best according to our evaluation.
 - [Koala](https://bair.berkeley.edu/blog/2023/04/03/koala/): a chatbot fine-tuned from LLaMA on user-shared conversations and open-source datasets. This one performs similarly to Vicuna.
+- [Dolly](https://www.databricks.com/blog/2023/04/12/dolly-first-open-commercially-viable-instruction-tuned-llm): an instruction-tuned open LLM by Databricks.
 - [ChatGLM](https://chatglm.cn/blog): an open bilingual dialogue language model | 开源双语对话语言模型
 - [Alpaca](https://crfm.stanford.edu/2023/03/13/alpaca.html): a model fine-tuned from LLaMA on 52K instruction-following demonstrations.
-- [LLaMA](https://arxiv.org/abs/2302.13971): open and efficient foundation language models
-
-Note: If you are waiting in the queue, check out more benchmark results from GPT-4 on a static website [here](https://vicuna.lmsys.org/eval).
+- [LLaMA](https://arxiv.org/abs/2302.13971): open and efficient foundation language models.
 """)
 
 
@@ -350,6 +352,8 @@ def build_demo():
             http_bot, [state, model_selector, temperature, max_output_tokens],
             [state, chatbot] + btn_list)
         clear_btn.click(clear_history, None, [state, chatbot, textbox] + btn_list)
+
+        model_selector.change(clear_history, None, [state, chatbot, textbox] + btn_list)
 
         textbox.submit(add_text, [state, textbox], [state, chatbot, textbox] + btn_list
             ).then(http_bot, [state, model_selector, temperature, max_output_tokens],
