@@ -40,111 +40,81 @@ class Creator:
             token = torch.multinomial(probs, num_samples=1)
         return token
 
-    def generate_stream(self, prompt, **kwargs):
-        assert len(prompt) == 1, "Batch size must be 1"
-
+    def generate(self, prompt, past_info=None, stream=True, **kwargs):
         # default values
         temperature = kwargs.get("temperature", 1.0)
         max_new_tokens = kwargs.get("max_length", 256)
         tokenizer, model, device = self.tokenizer, self.model, self.device
 
         # preparation
-        input_ids = tokenizer(prompt).input_ids
-        l_prompt = len(prompt[0])
-        output_ids = list(input_ids[0])
+        if past_info is None:
+            inputs = tokenizer(prompt, return_tensors="pt", padding=True)
+            input_ids = inputs.input_ids.to(device)
+            l_input_ids = len(input_ids[0])
+            output_ids = input_ids
+            attention_mask = inputs.attention_mask.to(device)
+        else:
+            breakpoint()
+        ending = [-1] * len(prompt)
 
-        # stream generation
-        is_finished = False
         for i in range(max_new_tokens):
-            T0 = utils.timeit()
-            if i == 0:
-                out = model(torch.as_tensor(input_ids, device=device), use_cache=True)
-                logits = out.logits
-                past_key_values = out.past_key_values
+            if self.debug:
+                T0 = utils.timeit()
+            # generation
+            if i == 0 and past_info is None:
+                out = model(input_ids, use_cache=True, attention_mask=attention_mask)
             else:
                 out = model(
-                    input_ids=torch.as_tensor([[token]], device=device),
+                    input_ids=token,
                     use_cache=True,
+                    attention_mask=attention_mask,
                     past_key_values=past_key_values,
                 )
-                logits = out.logits
-                past_key_values = out.past_key_values
             if self.debug:
                 print("Time: ", utils.timeit(T0))
 
             # sample
-            last_token_logits = logits[:, -1]
+            last_token_logits = out.logits[:, -1]
             token = self.sample(last_token_logits, temperature)
-            output_ids.append(int(token[0]))
+            output_ids = torch.cat((output_ids, token), dim=1)
+
+            # update attn & kv cache
+            past_key_values = out.past_key_values
+            attn_dtype = attention_mask.dtype
+            extend_mask = torch.ones(len(token), 1, dtype=attn_dtype).to(device)
+            attention_mask = torch.cat((attention_mask, extend_mask), dim=1)
 
             # ending detection
-            if token == tokenizer.eos_token_id:
-                is_finished = True
+            num_ended = 0
+            for j in range(len(prompt)):
+                if ending[j] == -1 and token[j] == tokenizer.eos_token_id:
+                    ending[j] = i
+                if ending[j] != -1:
+                    num_ended += 1
+            if num_ended == len(prompt) and stream:
                 break
-
-        del past_key_values
-
-        # decode output
-        output = tokenizer.decode(output_ids, skip_special_tokens=True)
-
-        # tokens
-        response = output[l_prompt:]
-        num_input_tokens = len(input_ids[0])
-        num_total_tokens = len(output_ids)
-        num_output_tokens = num_total_tokens - num_input_tokens
-
-        return [
-            dict(
-                input=prompt[0],
-                output=response,
-                sentence=output,
-                num_input_tokens=num_input_tokens,
-                num_output_tokens=num_output_tokens,
-                num_total_tokens=num_total_tokens,
-                is_finished=is_finished,
-            )
-        ]
-
-    def generate_batch(self, prompt, past_info=None, **kwargs):
-        # default values
-        temperature = kwargs.get("temperature", 1.0)
-        max_new_tokens = kwargs.get("max_length", 256)
-        tokenizer, model, device = self.tokenizer, self.model, self.device
-
-        # preparation
-        inputs = tokenizer(prompt, return_tensors="pt", padding=True)
-        input_ids = inputs.input_ids.to(device)
-        attention_mask = inputs.attention_mask.to(device)
-
-        # generation & sample
-        generation_output = self.model.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            do_sample=True,
-            return_dict_in_generate=True,
-        )
-
-        # decode output
-        output_ids = generation_output.sequences
-        outputs = self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)
 
         # collect results
         results = []
-        for i in range(len(outputs)):
-            l_prompt = len(prompt[i])
-            output = outputs[i][l_prompt:]
+        for i in range(len(output_ids)):
+            if ending[i] != -1:
+                output_ = output_ids[i][:l_input_ids + ending[i]]
+                is_finished = True
+            else:
+                output_ = output_ids[i]
+                is_finished = False
+            sentence = self.tokenizer.decode(output_, skip_special_tokens=True)
+            output = sentence[len(prompt[i]):]
+            
             num_input_tokens = len(input_ids[i])
             num_output_tokens = len(tokenizer(output).input_ids)
             num_total_tokens = num_input_tokens + num_output_tokens
-            is_finished = num_output_tokens < max_new_tokens
 
             # return
             result = dict(
                 input=prompt[i],
                 output=output,
-                sentence=outputs[i],
+                sentence=sentence,
                 num_input_tokens=num_input_tokens,
                 num_output_tokens=num_output_tokens,
                 num_total_tokens=num_total_tokens,
@@ -269,12 +239,12 @@ class Creator:
         # batch size = 1, ending detection
         # ===
         if strategy == "stream":
-            out = self.generate_stream(prompt, **kwargs)
+            out = self.generate(prompt, **kwargs)
         # ===
         # batch size = B
         # ===
         elif strategy == "batch":
-            out = self.generate_batch(prompt, **kwargs)
+            out = self.generate(prompt, stream=False, **kwargs)
         elif strategy == "group":
             out = self.generate_group(prompt, **kwargs)
         else:
