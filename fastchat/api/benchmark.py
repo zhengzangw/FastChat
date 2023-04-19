@@ -7,9 +7,9 @@ import argparse
 
 import numpy as np
 
-from fastchat.train.train import LazySupervisedDataset, _add_speaker_and_signal
 from fastchat.api.generate import Creator
 from fastchat import conversation
+from . import utils
 
 
 class EvalDataset:
@@ -50,10 +50,7 @@ class EvalDataset:
             return dict(input=inputs, output=outputs)
 
 
-def describe(input_len, name=""):
-    print(f"Statistics of {name}:")
-    print(f"\tMean: {np.mean(input_len):.2f}, Std: {np.std(input_len):.2f}")
-    print(f"\tquartiles: {np.quantile(input_len, [0, 0.25, 0.5, 0.75, 1])}")
+
 
 
 def benchmark(model, data, batch_size=1, strategy="stream", max_length=512, **kwargs):
@@ -74,11 +71,12 @@ def benchmark(model, data, batch_size=1, strategy="stream", max_length=512, **kw
             max_length=max_length,
             **kwargs,
         )
-        num_tokens += sum([o["num_input_tokens"] for o in out])
-        num_finished += sum([o["num_finished"] for o in out])
-        inputs_len.extend([o["num_input_tokens"] for o in out])
-        outputs_len.extend([o["num_output_tokens"] for o in out])
-        sentences_len.extend([o["num_total_tokens"] for o in out])
+        for item in out:
+            num_tokens += item["num_input_tokens"]
+            num_finished += item["is_finished"]
+            inputs_len.append(item["num_input_tokens"])
+            outputs_len.append(item["num_output_tokens"])
+            sentences_len.append(item["num_total_tokens"])
 
     T2 = time.time()
 
@@ -100,9 +98,9 @@ def benchmark(model, data, batch_size=1, strategy="stream", max_length=512, **kw
     )
     print(f"Unfinished: {unfinish_ratio*100:.2f} %, {len(data) - num_finished} samples")
 
-    describe(outputs_len, name="output")
-    describe(inputs_len, name="input")
-    describe(sentences_len, name="sentence")
+    utils.describe(outputs_len, name="output")
+    utils.describe(inputs_len, name="input")
+    utils.describe(sentences_len, name="sentence")
 
 
 def parse_args():
@@ -113,6 +111,7 @@ def parse_args():
     parser.add_argument("--num-data", type=int, default=32)
     parser.add_argument("--seed", type=int, default=44)
     parser.add_argument("--model", type=str, default="/data/scratch/vicuna-7b")
+    parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
     return args
 
@@ -122,7 +121,7 @@ if __name__ == "__main__":
 
     data = EvalDataset(args.data_path)
     data.sample(args.num_data, seed=args.seed)
-    model = Creator(args.model, debug=False)
+    model = Creator(args.model, debug=args.debug)
 
     # ===
     # benchmark

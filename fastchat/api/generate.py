@@ -3,71 +3,17 @@ import tqdm
 import time
 
 import torch
-from flexgen.pytorch_backend import TorchDevice, fix_recursive_import
-from flexgen.compression import CompressionConfig
 
 from fastchat.serve.inference import load_model
 from fastchat.conversation import conv_templates
-
-DEFAULT_PAD_TOKEN = "[PAD]"
-DEFAULT_EOS_TOKEN = "</s>"
-DEFAULT_BOS_TOKEN = "</s>"
-DEFAULT_UNK_TOKEN = "</s>"
-fix_recursive_import()
-dev = TorchDevice("cuda:0", 0, 0).compressed_device
-
-
-def compress(x):
-    config = CompressionConfig(num_bits=4, group_size=32, group_dim=0, symmetric=False)
-    packed = dev.compress(x, config)
-    del x
-    return packed
-
-
-def decompress(packed):
-    x = dev.decompress(packed)
-    del packed
-    return x
-
-
-class CACHE:
-    def __init__(self, model, batch_size) -> None:
-        self.num_layers = model.config.num_hidden_layers
-        self.num_kv = 2
-        self.batch_size = batch_size
-        self.num_heads = model.config.num_attention_heads
-        self.dim = model.config.hidden_size
-
-        self.batch_caches = []
-        self.token_caches = []
-        self.atten_mask_caches = []
-
-    def append(self, kv_caches, token=None, attention_mask=None):
-        kv_cache_processed = []
-        for c in kv_caches:
-            k = compress(c[0])
-            v = compress(c[1])
-            kv_cache_processed.append((k, v))
-        self.batch_caches.append(kv_cache_processed)
-        self.token_caches.append(token)
-        self.atten_mask_caches.append(attention_mask)
-
-    def get(self, i):
-        kv_cache_processed = self.batch_caches[i]
-        kv_cache = []
-        for j, (k, v) in enumerate(kv_cache_processed):
-            kv_cache_processed[j] = None
-            k = decompress(k)
-            v = decompress(v)
-            kv_cache.append((k, v))
-        return kv_cache, self.token_caches[i], self.atten_mask_caches[i]
+from . import utils
 
 
 class Creator:
     def __init__(
         self,
         model_name,
-        conv_template="v1",
+        conv_template="vicuna_v1.1",
         device="cuda",
         num_gpus=1,
         load_8bit=False,
@@ -77,7 +23,7 @@ class Creator:
             model_name, device, num_gpus, load_8bit, debug
         )
         self.conv = conv_templates[conv_template].copy()
-        self.tokenizer.add_special_tokens(dict(pad_token=DEFAULT_PAD_TOKEN))
+        self.tokenizer.pad_token = self.tokenizer.unk_token
         self.debug = debug
         self.device = device
 
@@ -86,67 +32,58 @@ class Creator:
             print(line["sentence"])
             print()
 
+    def sample(self, last_token_logits, temperature):
+        if temperature < 1e-4:
+            token = torch.argmax(last_token_logits, dim=-1, keepdim=True)
+        else:
+            probs = torch.softmax(last_token_logits / temperature, dim=-1)
+            token = torch.multinomial(probs, num_samples=1)
+        return token
+
+
     def generate_stream(self, prompt, **kwargs):
         assert len(prompt) == 1, "Batch size must be 1"
 
         # default values
         temperature = kwargs.get("temperature", 1.0)
         max_new_tokens = kwargs.get("max_length", 256)
-        stop_str = "###"
         tokenizer, model, device = self.tokenizer, self.model, self.device
 
         # preparation
         input_ids = tokenizer(prompt).input_ids
-        num_finished = 0
-        output_ids = list(input_ids[0])
         l_prompt = len(prompt[0])
+        output_ids = list(input_ids[0])
 
         # stream generation
+        is_finished = False
         for i in range(max_new_tokens):
-            torch.cuda.synchronize()
-            T0 = time.time()
             if i == 0:
                 out = model(torch.as_tensor(input_ids, device=device), use_cache=True)
                 logits = out.logits
                 past_key_values = out.past_key_values
             else:
-                attention_mask = torch.ones(
-                    1, past_key_values[0][0].shape[-2] + 1, device=device
-                )
                 out = model(
                     input_ids=torch.as_tensor([[token]], device=device),
                     use_cache=True,
-                    attention_mask=attention_mask,
                     past_key_values=past_key_values,
                 )
                 logits = out.logits
                 past_key_values = out.past_key_values
-            torch.cuda.synchronize()
-            T1 = time.time()
-            print(f"Time {i}: {T1 - T0:.3f} s")
 
             last_token_logits = logits[0][-1]
-
-            # greedy or sampling strategy
-            if temperature < 1e-4:
-                token = int(torch.argmax(last_token_logits))
-            else:
-                probs = torch.softmax(last_token_logits / temperature, dim=-1)
-                token = int(torch.multinomial(probs, num_samples=1))
-
-            # decode output
+            breakpoint()
+            token = self.sample(last_token_logits, temperature)
             output_ids.append(token)
-            output = tokenizer.decode(output_ids, skip_special_tokens=True)
 
             # ending detection
-            pos = output.rfind(stop_str, l_prompt)
-            if token == tokenizer.eos_token_id or pos != -1:
-                if pos != -1:
-                    output = output[:pos]
-                num_finished += 1
+            if token == tokenizer.eos_token_id:
+                is_finished = True
                 break
-
+    
         del past_key_values
+
+        # decode output
+        output = tokenizer.decode(output_ids, skip_special_tokens=True)
 
         # tokens
         response = output[l_prompt:]
@@ -162,7 +99,7 @@ class Creator:
                 num_input_tokens=num_input_tokens,
                 num_output_tokens=num_output_tokens,
                 num_total_tokens=num_total_tokens,
-                num_finished=num_finished,
+                is_finished=is_finished,
             )
         ]
 
@@ -333,14 +270,6 @@ class Creator:
         input_ids_list_flat = [item for sublist in input_ids_list for item in sublist]
         results = self.batch_ending_detect(outputs, prompt, input_ids_list_flat, tokenizer, stop_str)
         return results
-
-    def sample(self, last_token_logits, temperature):
-        if temperature < 1e-4:
-            token = torch.argmax(last_token_logits, dim=-1, keepdim=True)
-        else:
-            probs = torch.softmax(last_token_logits / temperature, dim=-1)
-            token = torch.multinomial(probs, num_samples=1)
-        return token
 
     @torch.inference_mode()
     def __call__(self, prompt, strategy="stream", **kwargs):
