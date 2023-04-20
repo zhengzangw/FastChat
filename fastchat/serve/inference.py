@@ -4,10 +4,11 @@ from typing import Optional
 import warnings
 
 import torch
+
 try:
-    from transformers import AutoTokenizer, AutoModelForCausalLM, LlamaTokenizer, LlamaForCausalLM, AutoModel, LlamaForCausalLM
+    from transformers import AutoTokenizer, AutoModelForCausalLM, LlamaTokenizer, LlamaForCausalLM, AutoModel, AutoModelForSeq2SeqLM
 except ImportError:
-    from transformers import AutoTokenizer, AutoModelForCausalLM, LLaMATokenizer, LLamaForCausalLM, AutoModel
+    from transformers import AutoTokenizer, AutoModelForCausalLM, LLaMATokenizer, LLamaForCausalLM, AutoModel, AutoModelForSeq2SeqLM
 
 from fastchat.conversation import conv_templates, get_default_conv_template, SeparatorStyle
 from fastchat.serve.compression import compress_module
@@ -31,6 +32,21 @@ def raise_warning_for_old_weights(model_path, model):
                 "3. Downgrade fschat to fschat==0.1.10 (Not recommonded).\n")
 
 
+def get_gpu_memory(max_gpus=None):
+    gpu_memory = []
+    num_gpus = torch.cuda.device_count() if max_gpus is None else min(max_gpus, torch.cuda.device_count())
+    
+    for gpu_id in range(num_gpus):
+        with torch.cuda.device(gpu_id):
+            device = torch.cuda.current_device()
+            gpu_properties = torch.cuda.get_device_properties(device)
+            total_memory = gpu_properties.total_memory / (1024**3)
+            allocated_memory = torch.cuda.memory_allocated() / (1024**3)
+            available_memory = total_memory - allocated_memory
+            gpu_memory.append(available_memory)
+    return gpu_memory
+
+
 def compute_skip_echo_len(model_name, conv, prompt):
     model_name = model_name.lower()
     if "chatglm" in model_name:
@@ -46,7 +62,7 @@ def compute_skip_echo_len(model_name, conv, prompt):
     return skip_echo_len
 
 
-def load_model(model_path, device, num_gpus, max_gpu_memory="13GiB",
+def load_model(model_path, device, num_gpus, max_gpu_memory=None,
                load_8bit=False, debug=False):
     if device == "cpu":
         kwargs = {}
@@ -57,10 +73,14 @@ def load_model(model_path, device, num_gpus, max_gpu_memory="13GiB",
         else:
             num_gpus = int(num_gpus)
             if num_gpus != 1:
-                kwargs.update({
-                    "device_map": "auto",
-                    "max_memory": {i: max_gpu_memory for i in range(num_gpus)},
-                })
+                kwargs["device_map"] = "auto"
+                if max_gpu_memory is None:
+                    available_gpu_memory = get_gpu_memory(num_gpus)
+                    kwargs["max_memory"] = {i: str(int(available_gpu_memory[i] * 0.85)) +
+                        "GiB" for i in range(num_gpus)}
+                else:
+                    kwargs["max_memory"] = {i: max_gpu_memory for i in range(num_gpus)}
+        print("init_kwargs", kwargs)
     elif device == "mps":
         kwargs = {"torch_dtype": torch.float16}
         # Avoid bugs in mps backend by not using in-place operations.
@@ -71,6 +91,10 @@ def load_model(model_path, device, num_gpus, max_gpu_memory="13GiB",
     if "chatglm" in model_path:
         tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
         model = AutoModel.from_pretrained(model_path, trust_remote_code=True).half().cuda()
+    elif "google/flan-t5" in model_path:
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_path,
+                                                      low_cpu_mem_usage=True, **kwargs)
+        tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
     elif "dolly" in model_path:
         kwargs.update({"torch_dtype": torch.bfloat16})
         tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
@@ -114,16 +138,37 @@ def generate_stream(model, tokenizer, params, device,
 
     for i in range(max_new_tokens):
         if i == 0:
-            out = model(
-                torch.as_tensor([input_ids], device=device), use_cache=True)
-            logits = out.logits
-            past_key_values = out.past_key_values
+            if model.config.is_encoder_decoder:
+                encoder_outputs = model.encoder(
+                    input_ids=torch.as_tensor([input_ids], device=device))
+                out = model(
+                    torch.as_tensor([input_ids], device=device),
+                    decoder_input_ids=torch.as_tensor([[model.generation_config.decoder_start_token_id]],
+                                                      device=device),
+                    encoder_outputs=encoder_outputs,
+                    use_cache=True)
+                logits = out.logits
+                past_key_values = out.past_key_values
+            else:
+                out = model(
+                    torch.as_tensor([input_ids], device=device), use_cache=True)
+                logits = out.logits
+                past_key_values = out.past_key_values
         else:
-            out = model(input_ids=torch.as_tensor([[token]], device=device),
-                        use_cache=True,
-                        past_key_values=past_key_values)
-            logits = out.logits
-            past_key_values = out.past_key_values
+            if model.config.is_encoder_decoder:
+                out = model(input_ids=torch.as_tensor([input_ids], device=device),
+                            use_cache=True,
+                            encoder_outputs=encoder_outputs,
+                            decoder_input_ids=torch.as_tensor([[token]], device=device),
+                            past_key_values=past_key_values)
+                logits = out.logits
+                past_key_values = out.past_key_values
+            else:
+                out = model(input_ids=torch.as_tensor([[token]], device=device),
+                            use_cache=True,
+                            past_key_values=past_key_values)
+                logits = out.logits
+                past_key_values = out.past_key_values
 
         last_token_logits = logits[0][-1]
 
