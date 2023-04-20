@@ -109,6 +109,7 @@ class Creator:
             num_input_tokens = len(input_ids[i])
             num_output_tokens = len(tokenizer(output).input_ids)
             num_total_tokens = num_input_tokens + num_output_tokens
+            length = output_ids[i].shape[0] - l_input_ids + 1
 
             # return
             result = dict(
@@ -119,6 +120,7 @@ class Creator:
                 num_output_tokens=num_output_tokens,
                 num_total_tokens=num_total_tokens,
                 is_finished=is_finished,
+                length=length,
             )
             results.append(result)
         return results
@@ -129,6 +131,7 @@ class Creator:
         length_predict_strategy="ground_truth",
         kv_cache_strategy="recomputation",
         schedule_strategy="block",
+        stream=True,
         **kwargs,
     ):
         # default values
@@ -162,14 +165,20 @@ class Creator:
 
         # generation
         outs = []
-        for batch, max_new_tokens in batches:
+        for batch, max_new_tokens in tqdm.tqdm(batches):
             inputs = [prompt[i] for i in batch]
-            kwargs["max_length"] = max_new_tokens
-            breakpoint()
-            out = self.generate(inputs, stream=False, **kwargs)
-            breakpoint()
+            if not stream:
+                kwargs["max_length"] = max_new_tokens
+            out = self.generate(inputs, stream=stream, **kwargs)
+            outs.extend(out)
+            if self.debug:
+                print(f"Predicted length: {max_new_tokens}, Actual length: {out[0]['length']}")
+                print([x['num_output_tokens'] for x in out])
 
         # put back to original order
+        order = [item for sublist in batches for item in sublist[0]]
+        results = [outs[i] for i in order]
+        return results
 
     @torch.inference_mode()
     def __call__(self, prompt, strategy="stream", **kwargs):

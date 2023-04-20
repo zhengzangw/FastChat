@@ -16,6 +16,7 @@ def benchmark(model, data, batch_size=16, strategy="stream", max_length=512, **k
 
     num_tokens = 0
     num_finished = 0
+    num_length = 0
     inputs_len, outputs_len, sentences_len = [], [], []
     T1 = time.time()
     for i in tqdm.tqdm(range(0, len(data), batch_size)):
@@ -33,6 +34,7 @@ def benchmark(model, data, batch_size=16, strategy="stream", max_length=512, **k
         for item in out:
             num_tokens += item["num_output_tokens"]
             num_finished += item["is_finished"]
+            num_length += item["length"]
             inputs_len.append(item["num_input_tokens"])
             outputs_len.append(item["num_output_tokens"])
             sentences_len.append(item["num_total_tokens"])
@@ -43,6 +45,7 @@ def benchmark(model, data, batch_size=16, strategy="stream", max_length=512, **k
     throughput_token = num_tokens / interval_s
     throughput_sample = len(data) / interval_s
     unfinish_ratio = (len(data) - num_finished) / len(data)
+    average_length = num_length / len(data)
 
     print(f"Strategy: {strategy}, Batch size: {batch_size}, Max length: {max_length}")
     if strategy == "group":
@@ -56,6 +59,7 @@ def benchmark(model, data, batch_size=16, strategy="stream", max_length=512, **k
         f"Throughput: {throughput_sample:.2f} samples/s, {1/throughput_sample:.2f} s/sample"
     )
     print(f"Unfinished: {unfinish_ratio*100:.2f} %, {len(data) - num_finished} samples")
+    print(f"Average length: {average_length:.2f} tokens")
 
     utils.describe(outputs_len, name="output")
     # utils.describe(inputs_len, name="input")
@@ -130,7 +134,7 @@ if __name__ == "__main__":
     # result = benchmark(model, data, batch_size=2)
     # result = benchmark(model, data, batch_size=4)
     # result = benchmark(model, data, batch_size=8)
-    result = benchmark(model, data, batch_size=16)
+    # result = benchmark(model, data, batch_size=16)
     # result = benchmark(model, data, batch_size=32)
     # result = benchmark(model, data, batch_size=64)
     # result = benchmark(model, data, batch_size=128)
@@ -142,7 +146,15 @@ if __name__ == "__main__":
     # result = benchmark(model, data, strategy="batch", max_length=512)
 
     # --- group strategy ---
-    # result = benchmark(model, data, batch_size=256, strategy="group", max_length=512, mini_batch_size=16)
+    result = benchmark(
+        model,
+        data,
+        batch_size=128,
+        strategy="group",
+        max_length=512,
+        mini_batch_size=16,
+        # stream=False,
+    )
 
     # ===
     # Generate a subset
