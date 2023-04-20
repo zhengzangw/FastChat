@@ -21,11 +21,13 @@ def benchmark(model, data, batch_size=16, strategy="stream", max_length=512, **k
     for i in tqdm.tqdm(range(0, len(data), batch_size)):
         batch = data[i : i + batch_size]
         inputs = batch["input"]
+        ids = batch["id"]
         out = model(
             inputs,
             strategy=strategy,
             temperature=0.7,
             max_length=max_length,
+            ids=ids,
             **kwargs,
         )
         for item in out:
@@ -128,9 +130,10 @@ if __name__ == "__main__":
     # result = benchmark(model, data, batch_size=2)
     # result = benchmark(model, data, batch_size=4)
     # result = benchmark(model, data, batch_size=8)
-    # result = benchmark(model, data, batch_size=16)
+    result = benchmark(model, data, batch_size=16)
     # result = benchmark(model, data, batch_size=32)
     # result = benchmark(model, data, batch_size=64)
+    # result = benchmark(model, data, batch_size=128)
 
     # --- max length ---
     # result = benchmark(model, data, strategy="batch", max_length=64)
@@ -140,14 +143,13 @@ if __name__ == "__main__":
 
     # --- group strategy ---
     # result = benchmark(model, data, batch_size=256, strategy="group", max_length=512, mini_batch_size=16)
-    # result = benchmark(model, data, batch_size=16, strategy="group", max_length=512, mini_batch_size=8)
 
     # ===
     # Generate a subset
     # ===
-    output_path = args.data_path.replace(
-        ".json", f"-{args.num_data}-seed{args.seed}.json"
-    )
-    out_json = generate_subset(model, data, batch_size=16)
-    utils.jdump(out_json, output_path)
-    logging.warning(f"Output saved to {output_path}")
+    # output_path = args.data_path.replace(
+    #     ".json", f"-{args.num_data}-seed{args.seed}.json"
+    # )
+    # out_json = generate_subset(model, data, batch_size=16)
+    # utils.jdump(out_json, output_path)
+    # logging.warning(f"Output saved to {output_path}")

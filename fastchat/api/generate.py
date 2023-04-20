@@ -98,14 +98,14 @@ class Creator:
         results = []
         for i in range(len(output_ids)):
             if ending[i] != -1:
-                output_ = output_ids[i][:l_input_ids + ending[i]]
+                output_ = output_ids[i][: l_input_ids + ending[i]]
                 is_finished = True
             else:
                 output_ = output_ids[i]
                 is_finished = False
             sentence = self.tokenizer.decode(output_, skip_special_tokens=True)
-            output = sentence[len(prompt[i]):]
-            
+            output = sentence[len(prompt[i]) :]
+
             num_input_tokens = len(input_ids[i])
             num_output_tokens = len(tokenizer(output).input_ids)
             num_total_tokens = num_input_tokens + num_output_tokens
@@ -123,115 +123,53 @@ class Creator:
             results.append(result)
         return results
 
-    def batch_ending_detect(
-        self, outputs, prompt, input_ids, tokenizer, stop_str="###"
+    def generate_group(
+        self,
+        prompt,
+        length_predict_strategy="ground_truth",
+        kv_cache_strategy="recomputation",
+        schedule_strategy="block",
+        **kwargs,
     ):
-        results = []
-        for i in range(len(outputs)):
-            # ending detection
-            num_finished = 0
-            l_prompt = len(prompt[i])
-            pos = outputs[i].find(stop_str, l_prompt)
-            if pos != -1:
-                outputs[i] = outputs[i][:pos]
-                num_finished += 1
-
-            # tokens
-            output = outputs[i][len(prompt[i]) :]
-            num_input_tokens = len(input_ids[i])
-            num_output_tokens = len(tokenizer(output).input_ids)
-            num_total_tokens = num_input_tokens + num_output_tokens
-
-            # return
-            result = dict(
-                input=prompt[i],
-                output=output,
-                sentence=outputs[i],
-                num_input_tokens=num_input_tokens,
-                num_output_tokens=num_output_tokens,
-                num_total_tokens=num_total_tokens,
-                num_finished=num_finished,
-            )
-            results.append(result)
-        return results
-
-    def generate_group(self, prompt, **kwargs):
         # default values
         temperature = kwargs.get("temperature", 1.0)
         max_new_tokens = kwargs.get("max_length", 256)
         mini_batch_size = kwargs.get("mini_batch_size", 32)
         tokenizer, model, device = self.tokenizer, self.model, self.device
+        ids = kwargs.get("ids", None)
 
         # kv cache computation & length prediction
-        cache = CACHE(model, mini_batch_size)
-        input_ids_list = []
+        cache = utils.CACHE(
+            model,
+            mini_batch_size,
+            length_predict_strategy="ground_truth",
+            kv_cache_strategy="recomputation",
+            max_new_tokens=max_new_tokens,
+        )
+
+        # length prediction by mini-batch
+        length_predicted = []
         for i in tqdm.tqdm(range(0, len(prompt), mini_batch_size)):
-            # preparation
-            inputs = tokenizer(
-                prompt[i : i + mini_batch_size], return_tensors="pt", padding=True
-            )
-            input_ids = inputs.input_ids.to(device)
-            attention_mask = inputs.attention_mask.to(device)
-
-            # kv cache computation
-            # torch.cuda.synchronize()
-            T0 = time.time()
-            out = model(
-                input_ids=input_ids, use_cache=True, attention_mask=attention_mask
-            )
-            # torch.cuda.synchronize()
-            T1 = time.time()
-            print(f"kv cache compute: {T1 - T0:.3f} s")
-
-            # offload kv cache
-            kv_cache_gpu = out.past_key_values
-            # > kv cache: (#layers, 2, #batch, #heads, #tokens, #dim)
-            # > 7B: (32, 2, bs, 32, length, 128)
-            token = self.sample(out["logits"][:, -1], temperature)
-            cache.append(kv_cache_gpu, token, attention_mask)
-
-            # torch.cuda.synchronize()
-            T2 = time.time()
-            print(f"kv cache store: {T2 - T1:.3f} s")
-            del out
-
-            input_ids_list.append(input_ids)
+            length = cache.predict_length(prompt[i : i + mini_batch_size], ids=ids[i: i + mini_batch_size])
+            length_predicted.extend(length)
 
         # rescheduling
-        pass
-
-        # batch generation
-        outputs = []
-        for i in tqdm.tqdm(range(len(prompt) // mini_batch_size)):
-            past_key_values, token, attention_mask = cache.get(i)
-            print(f"kv cache get: {T2 - T1:.3f} s")
-            output_ids = input_ids_list[i]
-            for j in range(max_new_tokens):
-                extend_mask = torch.ones(len(token), 1, dtype=attention_mask.dtype).to(
-                    device
-                )
-                attention_mask = torch.cat((attention_mask, extend_mask), dim=1)
-                out = model(
-                    input_ids=token,
-                    use_cache=True,
-                    attention_mask=attention_mask,
-                    past_key_values=past_key_values,
-                )
-
-                logits = out.logits
-                past_key_values = out.past_key_values
-                last_token_logits = logits[:, -1]
-                token = self.sample(last_token_logits, temperature)
-                output_ids = torch.cat((output_ids, token), dim=1)
-            print(f"output gen: {T3 - T2:.3f} s")
-            output = tokenizer.batch_decode(output_ids, skip_special_tokens=True)
-            outputs.extend(output)
-
-        input_ids_list_flat = [item for sublist in input_ids_list for item in sublist]
-        results = self.batch_ending_detect(
-            outputs, prompt, input_ids_list_flat, tokenizer, stop_str
+        batches = utils.schedule(
+            length_predicted,
+            mini_batch_size=mini_batch_size,
+            strategy=schedule_strategy,
         )
-        return results
+
+        # generation
+        outs = []
+        for batch, max_new_tokens in batches:
+            inputs = [prompt[i] for i in batch]
+            kwargs["max_length"] = max_new_tokens
+            breakpoint()
+            out = self.generate(inputs, stream=False, **kwargs)
+            breakpoint()
+
+        # put back to original order
 
     @torch.inference_mode()
     def __call__(self, prompt, strategy="stream", **kwargs):
