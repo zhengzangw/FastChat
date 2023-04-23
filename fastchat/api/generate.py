@@ -54,7 +54,7 @@ class Creator:
             output_ids = input_ids
             attention_mask = inputs.attention_mask.to(device)
         else:
-            breakpoint()
+            raise NotImplementedError
         ending = [-1] * len(prompt)
 
         for i in range(max_new_tokens):
@@ -180,6 +180,54 @@ class Creator:
         results = [outs[i] for i in order]
         return results
 
+    def generate_nar(self, prompt, past_info=None, stream=True, **kwargs):
+        # default values
+        temperature = kwargs.get("temperature", 1.0)
+        max_new_tokens = kwargs.get("max_length", 256)
+        tokenizer, model, device = self.tokenizer, self.model, self.device
+
+        # preparation
+        inputs = tokenizer(prompt, return_tensors="pt", padding=True)
+        input_ids = inputs.input_ids.to(device)
+        l_input_ids = len(input_ids[0])
+        output_ids = input_ids
+        attention_mask = inputs.attention_mask.to(device)
+        ending = [-1] * len(prompt)
+
+        for i in range(max_new_tokens):
+            if self.debug:
+                T0 = utils.timeit()
+            # generation
+            if i == 0 and past_info is None:
+                out = model(input_ids, use_cache=True, attention_mask=attention_mask)
+            else:
+                NUM_TOKENS = 5
+                unknown_tokens = torch.full((len(token), NUM_TOKENS), tokenizer.unk_token_id, dtype=torch.long).to(device)
+                token = torch.cat((token, unknown_tokens), dim=1)
+                extend_mask = torch.ones(len(token), NUM_TOKENS, dtype=attn_dtype).to(device)
+                attention_mask = torch.cat((attention_mask, extend_mask), dim=1)
+                out = model(
+                    input_ids=token,
+                    use_cache=True,
+                    attention_mask=attention_mask,
+                    past_key_values=past_key_values,
+                )
+                breakpoint()
+            if self.debug:
+                print("Time: ", utils.timeit(T0))
+
+            # sample
+            last_token_logits = out.logits[:, -1]
+            token = self.sample(last_token_logits, temperature)
+            output_ids = torch.cat((output_ids, token), dim=1)
+
+            # update attn & kv cache
+            past_key_values = out.past_key_values
+            attn_dtype = attention_mask.dtype
+            extend_mask = torch.ones(len(token), 1, dtype=attn_dtype).to(device)
+            attention_mask = torch.cat((attention_mask, extend_mask), dim=1)
+
+
     @torch.inference_mode()
     def __call__(self, prompt, strategy="stream", **kwargs):
         # ===
@@ -194,6 +242,8 @@ class Creator:
             out = self.generate(prompt, stream=False, **kwargs)
         elif strategy == "group":
             out = self.generate_group(prompt, **kwargs)
+        elif strategy == "nar":
+            out = self.generate_nar(prompt, **kwargs)
         else:
             raise NotImplementedError
 

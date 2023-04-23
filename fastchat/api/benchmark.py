@@ -146,15 +146,18 @@ if __name__ == "__main__":
     # result = benchmark(model, data, strategy="batch", max_length=512)
 
     # --- group strategy ---
-    result = benchmark(
-        model,
-        data,
-        batch_size=128,
-        strategy="group",
-        max_length=512,
-        mini_batch_size=16,
-        # stream=False,
-    )
+    # result = benchmark(
+    #     model,
+    #     data,
+    #     batch_size=128,
+    #     strategy="group",
+    #     max_length=512,
+    #     mini_batch_size=16,
+    #     # stream=False,
+    # )
+
+    # --- NAR strategy ---
+    result = benchmark(model, data, batch_size=1, strategy="nar", max_length=512)
 
     # ===
     # Generate a subset
